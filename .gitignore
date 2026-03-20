@@ -5,6 +5,7 @@ __pycache__
 
 raw_data
 
+.env
 
 *.ts
 *.zip
