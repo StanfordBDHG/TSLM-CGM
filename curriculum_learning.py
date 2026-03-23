@@ -23,6 +23,8 @@ from time_series_datasets.ecg_qa.ECGQACoTQADataset import ECGQACoTQADataset
 from time_series_datasets.util import (
     extend_time_series_to_match_patch_size_and_aggregate,
 )
+from cgm_diabetes.data.CGMDiabetesDataset import CGMDiabetesDataset
+
 import torch
 import torch.distributed as dist
 from torch.optim import AdamW
@@ -69,6 +71,7 @@ CURRICULUM_STAGES = [
     "stage3_cot",
     "stage4_sleep_cot",
     "stage5_ecg_cot",
+    "stage6_cgm_cot",
 ]
 
 
@@ -1417,6 +1420,29 @@ class CurriculumTrainer:
             eval_only=eval_only,
             sampler=sampler,
         )
+    
+    def stage6_cgm_cot(
+        self, batch_size: int = None, eval_only: bool = False
+    ) -> Dict[str, Any]:
+        """Stage 6: Chain-of-Thought Reasoning (CGM Diabetes Classification).
+
+        Configuration:
+        - Epochs: 60
+        - OpenTSLMSP: encoder_lr=2e-4, projector_lr=1e-4
+        - OpenTSLMFlamingo: base_lr=2e-4
+        - Metric: Test loss only
+        """
+        return self._train_stage(
+            stage_name="stage6_cgm_cot",
+            dataset_class=CGMDiabetesDataset,
+            num_epochs=60,
+            lr_encoder=2e-4,
+            lr_projector=1e-4,
+            lr_base=2e-4,
+            metric_func=None,
+            batch_size=batch_size,
+            eval_only=eval_only,
+        )
 
     def run_curriculum(
         self, stages: List[str] = None, batch_size: int = None, eval_only: bool = False
@@ -1493,6 +1519,12 @@ class CurriculumTrainer:
                 self._mark_stage_completed(stage, stage_results)
             elif stage == "stage5_ecg_cot":
                 stage_results = self.stage5_ecg_cot(
+                    batch_size=batch_size, eval_only=eval_only
+                )
+                results[stage] = stage_results
+                self._mark_stage_completed(stage, stage_results)
+            elif stage == "stage6_cgm_cot":
+                stage_results = self.stage6_cgm_cot(
                     batch_size=batch_size, eval_only=eval_only
                 )
                 results[stage] = stage_results

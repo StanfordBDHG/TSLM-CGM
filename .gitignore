@@ -6,6 +6,8 @@ __pycache__
 raw_data
 
 .env
+data/cache/
+**/__pycache__/
 
 *.ts
 *.zip
