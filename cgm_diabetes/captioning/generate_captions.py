@@ -434,7 +434,7 @@ def generate_captions(
             failed.append(patient_id)
 
     # Summary
-    print(f"\n[captions] Done.")
+    print("\n[captions] Done.")
     print(f"  Generated                 : {processed}")
     print(f"  Skipped (already existed) : {skipped_existing}")
     print(f"  Skipped (too short)       : {skipped_short}")

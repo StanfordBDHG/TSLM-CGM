@@ -50,7 +50,7 @@ class CGMDiabetesDataset(Dataset):
     Data caching:
     On the first call for a given patient, data is downloaded from Azure
     Blob Storage and saved to ``cache_dir/cgm/<patient_id>.parquet``.
-    Subsequent calls laod from disk.
+    Subsequent calls load from disk.
  
     To pre-download everything before training starts:
         CGMDiabetesDataset.prefetch(split="train")  # or "val" / "test" / None for all
