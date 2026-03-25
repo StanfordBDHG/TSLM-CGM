@@ -13,15 +13,6 @@ from azure.storage.blob import BlobServiceClient, ContainerClient
 from dotenv import load_dotenv
 import pandas as pd
 
-# Azure config
-load_dotenv()
-ACCOUNT_NAME    = os.environ["AZURE_ACCOUNT_NAME"]
-SAS_TOKEN       = os.environ["AZURE_SAS_TOKEN"]
-CONTAINER_NAME  = os.environ["AZURE_CONTAINER_NAME"]
-DATASET_PREFIX  = os.environ["AZURE_DATASET_PREFIX"]
-
-ACCOUNT_URL = f"https://{ACCOUNT_NAME}.blob.core.windows.net?{SAS_TOKEN}"
-
 # Map the long study_group strings to short labels
 LABEL_MAP = {
     "healthy":                                              "healthy",
@@ -33,8 +24,13 @@ LABEL_MAP = {
 
 
 def get_container_client() -> ContainerClient:
-    service = BlobServiceClient(account_url=ACCOUNT_URL)
-    return service.get_container_client(CONTAINER_NAME)
+    load_dotenv()
+    account_name   = os.environ["AZURE_ACCOUNT_NAME"]
+    sas_token      = os.environ["AZURE_SAS_TOKEN"]
+    container_name = os.environ["AZURE_CONTAINER_NAME"]
+    account_url    = f"https://{account_name}.blob.core.windows.net?{sas_token}"
+    service = BlobServiceClient(account_url=account_url)
+    return service.get_container_client(container_name)
 
 
 def load_participants() -> Dict[str, Dict]:
@@ -51,8 +47,10 @@ def load_participants() -> Dict[str, Dict]:
     Only includes patients who have wearable_blood_glucose data
     and whose study_group is one of the four known labels.
     """
+    load_dotenv()
+    dataset_prefix = os.environ["AZURE_DATASET_PREFIX"]
     client = get_container_client()
-    blob_path = f"{DATASET_PREFIX}/participants.tsv"
+    blob_path = f"{dataset_prefix}/participants.tsv"
 
     # Download TSV into memory
     raw = client.get_blob_client(blob_path).download_blob().readall()

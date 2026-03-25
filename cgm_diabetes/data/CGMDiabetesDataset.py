@@ -318,7 +318,7 @@ class CGMDiabetesDataset(Dataset):
             reasoning = self.captions[patient_id]
         else:
             reasoning = self._fallback_reasoning(label, stats)
-        return f"{reasoning}\nAnswer: {label}{self.eos_token}"
+        return f"{reasoning}{self.eos_token}"
  
     def _fallback_reasoning(self, label: str, stats: dict) -> str:
         """
@@ -332,7 +332,8 @@ class CGMDiabetesDataset(Dataset):
             f"time in range (70–180 mg/dL), {stats['pct_high']}% time above "
             f"range, and {stats['pct_low']}% time below range. "
             f"Based on these glucose dynamics, the patient's diabetes status "
-            f"is consistent with {label}."
+            f"is consistent with {label}.\n"
+            f"Answer: {label}"
         )
  
  

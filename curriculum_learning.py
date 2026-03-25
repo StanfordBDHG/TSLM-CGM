@@ -14,6 +14,8 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "src"
 import json
 import os as _os
 import argparse
+from functools import partial
+from pathlib import Path
 from typing import List, Optional, Dict, Any, Callable
 from time_series_datasets.TSQADataset import TSQADataset
 from time_series_datasets.m4.M4QADataset import M4QADataset
@@ -1390,18 +1392,39 @@ class CurriculumTrainer:
         - Metric: Test loss only
         """
 
+        known_labels = set(CGMDiabetesDataset.get_labels())
+
+        def extract_label(text: str):
+            """Return the first known label found after 'Answer:' in text, or None."""
+            after = text.split("Answer:")[-1].strip()
+            for label in known_labels:
+                if after.lower().startswith(label.lower()):
+                    return label
+            return None
+
         def cgm_accuracy(predictions, gold_answers):
             correct = sum(
                 1 for pred, gold in zip(predictions, gold_answers)
-                if gold.split("Answer:")[-1].strip() ==
-                pred.split("Answer:")[-1].strip().split()[0].rstrip(".,;:")
+                if extract_label(gold) is not None
+                and extract_label(gold) == extract_label(pred)
             )
             return {"accuracy": correct / len(predictions) if predictions else 0.0}
-        
+
+        # Resolve captions file — use GPT-4o captions if available, else template fallback.
+        captions_path = Path("cgm_diabetes/captioning/captions.json")
+        resolved_captions = str(captions_path) if captions_path.exists() else None
+        if resolved_captions:
+            print(f"[stage6] Using captions from {captions_path}")
+        else:
+            print("[stage6] captions.json not found — using template rationales")
+
+        # Wrap CGMDiabetesDataset with captions_path pre-configured so _train_stage
+        # can call dataset_class(split, EOS_TOKEN=...) without needing to know about it.
+        dataset_factory = partial(CGMDiabetesDataset, captions_path=resolved_captions)
 
         return self._train_stage(
             stage_name="stage6_cgm_cot",
-            dataset_class=CGMDiabetesDataset,
+            dataset_class=dataset_factory,
             num_epochs=60,
             lr_encoder=2e-4,
             lr_projector=1e-4,

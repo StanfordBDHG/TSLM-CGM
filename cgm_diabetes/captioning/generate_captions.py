@@ -136,11 +136,12 @@ def make_cgm_plot(df: pd.DataFrame, patient_id: str) -> bytes:
 
     Returns the PNG as raw bytes (ready for base64 encoding).
     """
-    glucose    = df["glucose"].to_numpy()
-    timestamps = df["timestamp"]
-
-    n_days   = max(1, int(np.ceil(len(glucose) / (24 * 12))))
-    readings_per_day = 24 * 12   # 288
+    # Normalise timestamps to date only (calendar day in the sensor's local date).
+    # Timestamps are UTC; using .dt.date gives consistent day boundaries.
+    ts = pd.to_datetime(df["timestamp"], utc=True)
+    dates = ts.dt.date
+    unique_days = sorted(dates.unique())
+    n_days = max(1, len(unique_days))
 
     fig, axes = plt.subplots(
         n_days, 1,
@@ -151,15 +152,16 @@ def make_cgm_plot(df: pd.DataFrame, patient_id: str) -> bytes:
         axes = [axes]
 
     fig.suptitle(
-        f"Patient {patient_id} — Full CGM Recording ({n_days} days)",
+        f"Full CGM Recording ({n_days} days)",
         fontsize=12, fontweight="bold", y=1.01,
     )
 
-    for day_idx, ax in enumerate(axes):
-        start = day_idx * readings_per_day
-        end   = min(start + readings_per_day, len(glucose))
-        g     = glucose[start:end]
-        t     = np.arange(len(g)) / 12   # hours into the day
+    for day_idx, (ax, day) in enumerate(zip(axes, unique_days)):
+        mask = dates == day
+        g = df.loc[mask, "glucose"].to_numpy()
+        # Hour-of-day derived from real timestamps (fractional hours)
+        t = ts[mask].dt.hour + ts[mask].dt.minute / 60 + ts[mask].dt.second / 3600
+        t = t.to_numpy()
 
         # Shaded target band
         ax.axhspan(HYPO_THRESHOLD, HYPER_THRESHOLD, color="#e8f5e9", alpha=0.5, zorder=0)
@@ -184,15 +186,15 @@ def make_cgm_plot(df: pd.DataFrame, patient_id: str) -> bytes:
             ax.plot(x_seg, y_seg, color=colour, linewidth=1.0, zorder=3)
 
         # Y-axis limits with padding
-        y_min = max(0,   g.min() - 20)
-        y_max = min(450, g.max() + 20)
+        y_min = max(0,   g.min() - 20) if len(g) else 0
+        y_max = min(450, g.max() + 20) if len(g) else 450
         ax.set_ylim(y_min, y_max)
         ax.set_xlim(0, 24)
 
         ax.set_ylabel("Glucose\n(mg/dL)", fontsize=8)
         ax.set_xlabel("Hour of day", fontsize=8)
         ax.tick_params(labelsize=7)
-        ax.set_title(f"Day {day_idx + 1}", fontsize=9, loc="left", pad=2)
+        ax.set_title(f"Day {day_idx + 1} ({day})", fontsize=9, loc="left", pad=2)
         ax.set_xticks(range(0, 25, 4))
         ax.grid(axis="y", alpha=0.3, zorder=1)
 

@@ -16,18 +16,6 @@ from dotenv import load_dotenv
 import numpy as np
 import pandas as pd
 
-# Azure config
-load_dotenv()
-ACCOUNT_NAME    = os.environ["AZURE_ACCOUNT_NAME"]
-SAS_TOKEN       = os.environ["AZURE_SAS_TOKEN"]
-CONTAINER_NAME  = os.environ["AZURE_CONTAINER_NAME"]
-DATASET_PREFIX  = os.environ["AZURE_DATASET_PREFIX"]
-
-ACCOUNT_URL = f"https://{ACCOUNT_NAME}.blob.core.windows.net?{SAS_TOKEN}"
-
-CGM_PREFIX = (f"{DATASET_PREFIX}/wearable_blood_glucose/"
-              "continuous_glucose_monitoring/dexcom_g6")
-
 # Default local cache directory.
 # Save each patient's CGM data as a single parquet file:
 #   <CACHE_DIR>/cgm/<patient_id>.parquet
@@ -35,12 +23,12 @@ DEFAULT_CACHE_DIR = Path(os.environ.get("TSLM_CACHE_DIR", "./data/cache")).resol
 
 # Dexcom G6 reports 'Low' when glucose < 40 mg/dL and 'High' when > 400 mg/dL.
 _SENTINEL_VALUES = {"low": 39.0, "high": 401.0}
- 
- 
+
+
 def _parse_glucose_value(value) -> float:
     """
     Convert a raw Dexcom glucose value to float.
- 
+
     Handles the string sentinels 'LOW' and 'HIGH' that the Dexcom G6 reports
     when glucose falls outside its measurable range (<40 or >400 mg/dL).
     """
@@ -48,13 +36,25 @@ def _parse_glucose_value(value) -> float:
         normalised = value.strip().lower()
         if normalised in _SENTINEL_VALUES:
             return _SENTINEL_VALUES[normalised]
-        return float(value)  
+        return float(value)
     return float(value)
 
 
 def get_container_client() -> ContainerClient:
-    service = BlobServiceClient(account_url=ACCOUNT_URL)
-    return service.get_container_client(CONTAINER_NAME)
+    load_dotenv()
+    account_name   = os.environ["AZURE_ACCOUNT_NAME"]
+    sas_token      = os.environ["AZURE_SAS_TOKEN"]
+    container_name = os.environ["AZURE_CONTAINER_NAME"]
+    account_url    = f"https://{account_name}.blob.core.windows.net?{sas_token}"
+    service = BlobServiceClient(account_url=account_url)
+    return service.get_container_client(container_name)
+
+
+def _get_cgm_prefix() -> str:
+    load_dotenv()
+    dataset_prefix = os.environ["AZURE_DATASET_PREFIX"]
+    return (f"{dataset_prefix}/wearable_blood_glucose/"
+            "continuous_glucose_monitoring/dexcom_g6")
 
 
 def _cgm_cache_path(patient_id: str, cache_dir: Path) -> Path:
@@ -67,7 +67,7 @@ def _download_cgm_from_azure(patient_id: str) -> pd.DataFrame:
     Returns a DataFrame with columns [timestamp, glucose], sorted ascending.
     """
     client = get_container_client()
-    blob_path = f"{CGM_PREFIX}/{patient_id}/{patient_id}_DEX.json"
+    blob_path = f"{_get_cgm_prefix()}/{patient_id}/{patient_id}_DEX.json"
  
     raw = client.get_blob_client(blob_path).download_blob().readall()
     data = json.loads(raw)
