@@ -1,6 +1,10 @@
 #
 # This source file is part of the TSLM-CGM project
 #
+# SPDX-FileCopyrightText: 2025 Stanford University, ETH Zurich, and the project authors (see CONTRIBUTORS.md)
+#
+# SPDX-License-Identifier: MIT
+#
 
 import os
 import json
@@ -21,12 +25,11 @@ from cgm_diabetes.data.cgm_loader import (
 
 load_dotenv()
 
-# Window size configuration
-# Change WINDOW_HOURS to use a different window size, e.g. WINDOW_HOURS = 72 for 3 days, 168 for 7 days
-WINDOW_HOURS = 24
-READINGS_PER_HOUR = 12 # Dexcom G6: one reading every 5 minutes
-WINDOW_SIZE = WINDOW_HOURS * READINGS_PER_HOUR # = 288 for 24 hours
-STEP_SIZE = WINDOW_SIZE # Non-overlapping windows (one per day), set to WINDOW_SIZE // 2 for 50% overlap
+# Minimum recording length to include a patient.
+# Patients with fewer readings than this are skipped entirely.
+READINGS_PER_HOUR = 12  # Dexcom G6: one reading every 5 minutes
+MIN_DAYS = 8
+MIN_READINGS = MIN_DAYS * 24 * READINGS_PER_HOUR  # 2304 readings
 
 LABELS = [
     "healthy",
@@ -40,9 +43,9 @@ class CGMDiabetesDataset(Dataset):
     """
     PyTorch Dataset for CGM-based diabetes classification.
  
-    Each sample is a sliding window of WINDOW_SIZE glucose readings (default
-    288 = 24 hours at 5-minute intervals) from a single patient, paired with
-    a chain-of-thought caption and a diabetes category label.
+    Each sample is the full CGM recording for a single patient (up to 10 days
+    of 5-minute readings), paired with a chain-of-thought caption and a diabetes
+    category label. Patients with fewer than min_days of data are skipped.
  
     Data caching:
     On the first call for a given patient, data is downloaded from Azure
@@ -57,11 +60,6 @@ class CGMDiabetesDataset(Dataset):
         One of "train", "val", "test".
     EOS_TOKEN : str
         End-of-sequence token string from the model tokenizer.
-    window_hours : int
-        Length of each sample window in hours. Default 24.
-    step_hours : int or None
-        How far to advance the window between samples, in hours.
-        None (default) means non-overlapping (step = window size).
     max_samples : int or None
         Optional cap for total number of samples, used for testing.
     captions_path : str or None
@@ -83,8 +81,7 @@ class CGMDiabetesDataset(Dataset):
         self,
         split: str = "train",
         EOS_TOKEN: str = "",
-        window_hours: int = WINDOW_HOURS,
-        step_hours: Optional[int] = None,
+        min_days: float = MIN_DAYS,
         max_samples: Optional[int] = None,
         captions_path: Optional[str] = None,
         time_series_format_function: Optional[Callable] = None,
@@ -94,20 +91,21 @@ class CGMDiabetesDataset(Dataset):
     ):
         super().__init__()
  
-        assert split in ("train", "val", "test"), \
-            f"split must be 'train', 'val', or 'test', got '{split}'"
+        assert split in ("train", "val", "test", "validation"), \
+            f"split must be 'train', 'val', 'validation', or 'test', got '{split}'"
+
+        # Normalise "validation" -> "val" to match participants.tsv
+        if split == "validation":
+            split = "val"
  
         self.split          = split
         self.eos_token      = EOS_TOKEN
         self.format_fn      = time_series_format_function
         self.cache_dir      = Path(cache_dir) if cache_dir else DEFAULT_CACHE_DIR
         self.force_download = force_download
+        self.min_readings   = int(min_days * 24 * READINGS_PER_HOUR)
  
-        # Window
-        self.window_hours = window_hours
-        self.window_size  = window_hours * READINGS_PER_HOUR
-        self.step_size    = (step_hours or window_hours) * READINGS_PER_HOUR
- 
+
         # Load captions if provided
         self.captions: Dict[str, str] = {}
         if captions_path is not None:
@@ -119,9 +117,8 @@ class CGMDiabetesDataset(Dataset):
         print(f"[CGMDiabetesDataset] Building {split} sample index...")
         self._patient_cache: Dict[str, np.ndarray] = {}  # in-process cache
         self.samples = self._build_sample_index(split, max_samples)
-        print(f"[CGMDiabetesDataset] {len(self.samples)} windows across "
-              f"{len(set(s['patient_id'] for s in self.samples))} patients")
- 
+        print(f"[CGMDiabetesDataset] {len(self.samples)} patients "
+              f"(min {min_days} days = {self.min_readings} readings)")
 
     # Prefetch all data for a split up front
  
@@ -166,8 +163,9 @@ class CGMDiabetesDataset(Dataset):
         self, split: str, max_samples: Optional[int]
     ) -> List[Dict]:
         """
-        For each patient in the split, load their CGM data (from disk cache or
-        Azure) and record the (start, end) slice indices for each window.
+        For each patient in the split, load their full CGM recording and add
+        them as a single sample if they meet the min_readings threshold.
+ 
         """
         participants = load_participants()
         split_patients = {
@@ -177,36 +175,41 @@ class CGMDiabetesDataset(Dataset):
  
         samples = []
         failed = []
+        skipped = []
  
         for patient_id, info in split_patients.items():
             if max_samples is not None and len(samples) >= max_samples:
                 break
             try:
                 glucose = self._load_glucose_array(patient_id)
- 
-                if len(glucose) < self.window_size:
+
+                # Only skip patients below minimum threshold
+                if len(glucose) < self.min_readings:
+                    skipped.append(patient_id)
                     print(f"  [skip] {patient_id}: only {len(glucose)} readings "
-                          f"(need {self.window_size})")
+                          f"(need at least {self.min_readings} readings)")
                     continue
  
-                # Cache the array in-process to avoid re-reading parquet for
-                # every window of the same patient during index build
+                # Cache the array in-process 
                 self._patient_cache[patient_id] = glucose
  
-                start = 0
-                while start + self.window_size <= len(glucose):
-                    samples.append({
-                        "patient_id": patient_id,
-                        "label":      info["label"],
-                        "start":      start,
-                        "end":        start + self.window_size,
-                    })
-                    start += self.step_size
+   
+                samples.append({
+                    "patient_id": patient_id,
+                    "label":      info["label"],
+                    "n_readings": len(glucose),
+                })
+
  
             except Exception as e:
                 failed.append(patient_id)
                 print(f"  [error] {patient_id}: {e}")
- 
+        
+        if skipped:
+            print(f"[CGMDiabetesDataset] Skipped {len(skipped)} patients with "
+                  f"fewer than {self.min_readings / READINGS_PER_HOUR / 24:.1f} "
+                  f"days of data")
+        
         if failed:
             print(f"[CGMDiabetesDataset] Failed to load {len(failed)} patients: "
                   f"{failed[:5]}{'...' if len(failed) > 5 else ''}")
@@ -225,17 +228,15 @@ class CGMDiabetesDataset(Dataset):
         sample     = self.samples[idx]
         patient_id = sample["patient_id"]
         label      = sample["label"]
-        start      = sample["start"]
-        end        = sample["end"]
  
-        # Load glucose window
+        # Load the full glucose recording for this patient
         if patient_id in self._patient_cache:
-            glucose = self._patient_cache[patient_id][start:end]
+            glucose = self._patient_cache[patient_id]
         else:
-            glucose = self._load_glucose_array(patient_id)[start:end]
+            glucose = self._load_glucose_array(patient_id)
  
-        # Normalize to 0 mean / unit variance for the model
-        # Raw values are preserved in stats for the text prompt
+        # Normalize to 0 mean / unit variance for the model.
+        # Raw values are preserved in stats for the text prompt.
         mean = glucose.mean()
         std  = glucose.std() if glucose.std() > 0 else 1.0
         glucose_normalised = (glucose - mean) / std
@@ -266,12 +267,13 @@ class CGMDiabetesDataset(Dataset):
             "label":            label,
         }
  
-
+ 
     # Prompt builders
  
     def _build_ts_text(self, stats: dict, mean: float, std: float) -> str:
+        duration_days = stats['n_readings'] / READINGS_PER_HOUR / 24
         return (
-            f"This is a {self.window_hours}-hour continuous glucose monitoring "
+            f"This is a {duration_days:.1f}-day continuous glucose monitoring "
             f"recording from a Dexcom G6 sensor, sampled every 5 minutes "
             f"({stats['n_readings']} readings). "
             f"It has mean {mean:.1f} mg/dL and std {std:.1f} mg/dL. "
@@ -280,12 +282,13 @@ class CGMDiabetesDataset(Dataset):
  
     def _build_pre_prompt(self, stats: dict) -> str:
         options = "\n".join(f"  - {label}" for label in LABELS)
+        duration_days = stats['n_readings'] / READINGS_PER_HOUR / 24
         return (
             f"You are an expert endocrinologist analysing continuous glucose "
             f"monitoring (CGM) data. Your task is to classify a patient's "
             f"diabetes status into one of the following categories:\n"
             f"{options}\n\n"
-            f"Glucose summary statistics for this {self.window_hours}-hour window:\n"
+            f"Glucose summary statistics for this {duration_days:.1f}-day recording:\n"
             f"  Mean glucose    : {stats['mean']} mg/dL\n"
             f"  Std deviation   : {stats['std']} mg/dL\n"
             f"  Min             : {stats['min']} mg/dL\n"
@@ -322,8 +325,9 @@ class CGMDiabetesDataset(Dataset):
         Template-based reasoning used before GPT-4 captions are generated.
         Replace with generate_captions.py output before final training.
         """
+        duration_days = stats['n_readings'] / READINGS_PER_HOUR / 24
         return (
-            f"Examining this {self.window_hours}-hour CGM trace: the mean "
+            f"Examining this {duration_days:.1f}-day CGM trace: the mean "
             f"glucose is {stats['mean']} mg/dL with {stats['pct_in_range']}% "
             f"time in range (70–180 mg/dL), {stats['pct_high']}% time above "
             f"range, and {stats['pct_low']}% time below range. "
@@ -331,9 +335,11 @@ class CGMDiabetesDataset(Dataset):
             f"is consistent with {label}."
         )
  
+ 
     # Static helpers
  
     @staticmethod
     def get_labels() -> List[str]:
         """Return the list of possible class labels. Used by the evaluator."""
         return LABELS
+ 

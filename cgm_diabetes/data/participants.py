@@ -1,6 +1,10 @@
 #
 # This source file is part of the TSLM-CGM project
 #
+# SPDX-FileCopyrightText: 2025 Stanford University, ETH Zurich, and the project authors (see CONTRIBUTORS.md)
+#
+# SPDX-License-Identifier: MIT
+#
 
 import io
 import os
@@ -57,7 +61,7 @@ def load_participants() -> Dict[str, Dict]:
     original_len = len(df)
 
     # Keep only patients with CGM data and a recognised label
-    df = df[df["wearable_blood_glucose"] == True]
+    df[df["wearable_blood_glucose"].astype(str).str.lower() == "true"]
     df = df[df["study_group"].isin(LABEL_MAP.keys())]
 
     filtered_len = len(df)

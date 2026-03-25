@@ -679,9 +679,11 @@ class CurriculumTrainer:
                         if len(unexpected_keys) > 5:
                             print(f"   ... and {len(unexpected_keys) - 5} more keys")
                 except Exception as e:
-                    raise RuntimeError(
-                        f"Failed to load model state from previous stage {previous_stage}: {e}"
-                    )
+                    if self.rank == 0:
+                        print(
+                            f"⚠️  No previous stage checkpoint found, starting {current_stage} "
+                            f"from base pretrained LLM weights. ({e})"
+                        )
             return {
                 "stage": previous_stage,
                 "metrics": metrics,
@@ -689,7 +691,13 @@ class CurriculumTrainer:
                 "val_loss": checkpoint.get("val_loss", "?"),
             }
         except Exception as e:
-            raise RuntimeError(f"Failed to load previous stage model: {e}")
+            if self.rank == 0:
+                print(
+                    f"⚠️  No previous stage checkpoint found, starting {current_stage} "
+                    f"from base pretrained LLM weights. ({e})"
+                )
+            return None
+
 
     def _calculate_accuracy(
         self, predictions: List[str], gold_answers: List[str]
@@ -959,13 +967,13 @@ class CurriculumTrainer:
                             print(f"   {metric}: {value}")
                     print()
             else:
-                # Only allow fresh model for first stage
-                if stage_name != CURRICULUM_STAGES[0]:
-                    raise RuntimeError(
-                        f"Cannot start {stage_name} with fresh model. Previous stage {CURRICULUM_STAGES[CURRICULUM_STAGES.index(stage_name) - 1]} must be completed first."
-                    )
+                # Remove guard: Only allow fresh model for first stage
+                # if stage_name != CURRICULUM_STAGES[0]:
+                #     raise RuntimeError(
+                #         f"Cannot start {stage_name} with fresh model. Previous stage {CURRICULUM_STAGES[CURRICULUM_STAGES.index(stage_name) - 1]} must be completed first."
+                #     )
                 if self.rank == 0:
-                    print("🆕 Starting with fresh model (first stage)")
+                    print(f"🆕 Starting {stage_name} with fresh model")
                     print()
         except Exception as e:
             if self.rank == 0:
@@ -1432,6 +1440,16 @@ class CurriculumTrainer:
         - OpenTSLMFlamingo: base_lr=2e-4
         - Metric: Test loss only
         """
+
+        def cgm_accuracy(predictions, gold_answers):
+            correct = sum(
+                1 for pred, gold in zip(predictions, gold_answers)
+                if gold.split("Answer:")[-1].strip() ==
+                pred.split("Answer:")[-1].strip().split()[0].rstrip(".,;:")
+            )
+            return {"accuracy": correct / len(predictions) if predictions else 0.0}
+        
+
         return self._train_stage(
             stage_name="stage6_cgm_cot",
             dataset_class=CGMDiabetesDataset,
@@ -1439,7 +1457,7 @@ class CurriculumTrainer:
             lr_encoder=2e-4,
             lr_projector=1e-4,
             lr_base=2e-4,
-            metric_func=None,
+            metric_func=cgm_accuracy, # For meaningful evaluation
             batch_size=batch_size,
             eval_only=eval_only,
         )
@@ -1648,42 +1666,7 @@ class CurriculumTrainer:
         model = self._get_model()
 
         # Enable LoRA for stages after stage2_captioning
-        stages_with_lora = ["stage3_cot", "stage4_sleep_cot", "stage5_ecg_cot"]
-
-        if stage_name in stages_with_lora:
-            if not getattr(model, "lora_enabled", False):
-                if self.rank == 0:
-                    print(f"🔧 Enabling LoRA for {stage_name}")
-                try:
-                    model.enable_lora(lora_r=16, lora_alpha=32, lora_dropout=0.0)
-                    if self.rank == 0:
-                        print(f"✅ LoRA enabled for {stage_name}")
-                except Exception as e:
-                    if self.rank == 0:
-                        print(f"❌ Failed to enable LoRA for {stage_name}: {e}")
-                        print("   Continuing without LoRA...")
-            else:
-                if self.rank == 0:
-                    print(f"✅ LoRA already enabled for {stage_name}")
-        else:
-            if self.rank == 0:
-                if stage_name in ["stage1_mcq", "stage2_captioning"]:
-                    print(
-                        f"ℹ️  LoRA disabled for {stage_name} (only enabled for stages 3+)"
-                    )
-                else:
-                    print(f"ℹ️  LoRA not configured for {stage_name}")
-
-    def _enable_lora_if_needed(self, stage_name: str):
-        """Enable LoRA for OpenTSLMSP models in stages after stage2."""
-        if self.model_type != "OpenTSLMSP":
-            return  # LoRA only for OpenTSLMSP
-
-        # Get the underlying model (handles DDP wrapping)
-        model = self._get_model()
-
-        # Enable LoRA for stages after stage2_captioning
-        stages_with_lora = ["stage3_cot", "stage4_sleep_cot", "stage5_ecg_cot"]
+        stages_with_lora = ["stage3_cot", "stage4_sleep_cot", "stage5_ecg_cot", "stage6_cgm_cot"]
 
         if stage_name in stages_with_lora:
             if not getattr(model, "lora_enabled", False):
