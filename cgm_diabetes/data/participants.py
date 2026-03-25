@@ -61,7 +61,7 @@ def load_participants() -> Dict[str, Dict]:
     original_len = len(df)
 
     # Keep only patients with CGM data and a recognised label
-    df[df["wearable_blood_glucose"].astype(str).str.lower() == "true"]
+    df = df[df["wearable_blood_glucose"].astype(str).str.lower() == "true"]
     df = df[df["study_group"].isin(LABEL_MAP.keys())]
 
     filtered_len = len(df)
