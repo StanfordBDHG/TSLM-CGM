@@ -133,6 +133,7 @@ def make_cgm_plot(df: pd.DataFrame, patient_id: str) -> bytes:
     - Dashed reference lines at 70 mg/dL (hypo) and 180 mg/dL (hyper)
     - Shaded target range band (70-180 mg/dL)
     - One subplot per day 
+    - Gaps where sensor dropout exceeds 10 mins
 
     Returns the PNG as raw bytes (ready for base64 encoding).
     """
@@ -156,12 +157,21 @@ def make_cgm_plot(df: pd.DataFrame, patient_id: str) -> bytes:
         fontsize=12, fontweight="bold", y=1.01,
     )
 
+    max_gap = pd.Timedelta(minutes=10)
+
     for day_idx, (ax, day) in enumerate(zip(axes, unique_days)):
         mask = dates == day
+
+        # Use a reset index so iloc lookups are contiguous
+        day_ts = ts[mask].reset_index(drop=True)
+
         g = df.loc[mask, "glucose"].to_numpy()
         # Hour-of-day derived from real timestamps (fractional hours)
-        t = ts[mask].dt.hour + ts[mask].dt.minute / 60 + ts[mask].dt.second / 3600
-        t = t.to_numpy()
+        t = (
+            day_ts.dt.hour
+            + day_ts.dt.minute / 60
+            + day_ts.dt.second / 3600
+        ).to_numpy()
 
         # Shaded target band
         ax.axhspan(HYPO_THRESHOLD, HYPER_THRESHOLD, color="#e8f5e9", alpha=0.5, zorder=0)
@@ -172,8 +182,10 @@ def make_cgm_plot(df: pd.DataFrame, patient_id: str) -> bytes:
         ax.axhline(HYPER_THRESHOLD, color="#c62828", linestyle="--",
                    linewidth=1.2, label=f"Hyper ({HYPER_THRESHOLD} mg/dL)", zorder=2)
 
-        # Glucose trace — colour segments by zone
+        # Glucose trace — colour segments by zone, skip across sensor dropout gaps
         for i in range(len(g) - 1):
+            if day_ts.iloc[i + 1] - day_ts.iloc[i] > max_gap:
+                continue  # gap too large — don't draw a line across dropout
             x_seg = [t[i], t[i + 1]]
             y_seg = [g[i], g[i + 1]]
             mid   = (g[i] + g[i + 1]) / 2
@@ -185,6 +197,7 @@ def make_cgm_plot(df: pd.DataFrame, patient_id: str) -> bytes:
                 colour = "#1565c0"    # blue — in range
             ax.plot(x_seg, y_seg, color=colour, linewidth=1.0, zorder=3)
 
+
         # Y-axis limits with padding
         y_min = max(0,   g.min() - 20) if len(g) else 0
         y_max = min(450, g.max() + 20) if len(g) else 450
@@ -194,7 +207,7 @@ def make_cgm_plot(df: pd.DataFrame, patient_id: str) -> bytes:
         ax.set_ylabel("Glucose\n(mg/dL)", fontsize=8)
         ax.set_xlabel("Hour of day", fontsize=8)
         ax.tick_params(labelsize=7)
-        ax.set_title(f"Day {day_idx + 1} ({day})", fontsize=9, loc="left", pad=2)
+        ax.set_title(f"Day {day_idx + 1}", fontsize=9, loc="left", pad=2)
         ax.set_xticks(range(0, 25, 4))
         ax.grid(axis="y", alpha=0.3, zorder=1)
 
@@ -416,11 +429,12 @@ def generate_captions(
                   f"— {stats['n_readings']} readings...")
             caption = call_gpt4_vision(client, prompt, image_b64)
 
-            # Ensure caption ends with the correct Answer line
             expected_suffix = f"Answer: {label}"
-            if not caption.strip().endswith(expected_suffix):
-                print(f"    ⚠️  Appending missing '{expected_suffix}'")
-                caption = caption.rstrip() + f"\nAnswer: {label}"
+            lines = caption.rstrip().splitlines()
+            while lines and lines[-1].lstrip().lower().startswith("answer:"):
+                lines.pop()
+            body = "\n".join(lines).rstrip()
+            caption = f"{body}\n{expected_suffix}" if body else expected_suffix
 
             captions[patient_id] = caption
             processed += 1
