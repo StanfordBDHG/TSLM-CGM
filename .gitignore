@@ -5,6 +5,10 @@ __pycache__
 
 raw_data
 
+.env
+data/cache/
+**/__pycache__/
+**/dry_run_plots/
 
 *.ts
 *.zip

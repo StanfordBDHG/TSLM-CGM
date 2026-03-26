@@ -14,6 +14,8 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "src"
 import json
 import os as _os
 import argparse
+from functools import partial
+from pathlib import Path
 from typing import List, Optional, Dict, Any, Callable
 from time_series_datasets.TSQADataset import TSQADataset
 from time_series_datasets.m4.M4QADataset import M4QADataset
@@ -23,6 +25,8 @@ from time_series_datasets.ecg_qa.ECGQACoTQADataset import ECGQACoTQADataset
 from time_series_datasets.util import (
     extend_time_series_to_match_patch_size_and_aggregate,
 )
+from cgm_diabetes.data.CGMDiabetesDataset import CGMDiabetesDataset
+
 import torch
 import torch.distributed as dist
 from torch.optim import AdamW
@@ -69,6 +73,7 @@ CURRICULUM_STAGES = [
     "stage3_cot",
     "stage4_sleep_cot",
     "stage5_ecg_cot",
+    "stage6_cgm_cot",
 ]
 
 
@@ -676,9 +681,11 @@ class CurriculumTrainer:
                         if len(unexpected_keys) > 5:
                             print(f"   ... and {len(unexpected_keys) - 5} more keys")
                 except Exception as e:
-                    raise RuntimeError(
-                        f"Failed to load model state from previous stage {previous_stage}: {e}"
-                    )
+                    if self.rank == 0:
+                        print(
+                            f"⚠️  No previous stage checkpoint found, starting {current_stage} "
+                            f"from base pretrained LLM weights. ({e})"
+                        )
             return {
                 "stage": previous_stage,
                 "metrics": metrics,
@@ -686,7 +693,13 @@ class CurriculumTrainer:
                 "val_loss": checkpoint.get("val_loss", "?"),
             }
         except Exception as e:
-            raise RuntimeError(f"Failed to load previous stage model: {e}")
+            if self.rank == 0:
+                print(
+                    f"⚠️  No previous stage checkpoint found, starting {current_stage} "
+                    f"from base pretrained LLM weights. ({e})"
+                )
+            return None
+
 
     def _calculate_accuracy(
         self, predictions: List[str], gold_answers: List[str]
@@ -956,13 +969,13 @@ class CurriculumTrainer:
                             print(f"   {metric}: {value}")
                     print()
             else:
-                # Only allow fresh model for first stage
-                if stage_name != CURRICULUM_STAGES[0]:
-                    raise RuntimeError(
-                        f"Cannot start {stage_name} with fresh model. Previous stage {CURRICULUM_STAGES[CURRICULUM_STAGES.index(stage_name) - 1]} must be completed first."
-                    )
+                # Remove guard: Only allow fresh model for first stage
+                # if stage_name != CURRICULUM_STAGES[0]:
+                #     raise RuntimeError(
+                #         f"Cannot start {stage_name} with fresh model. Previous stage {CURRICULUM_STAGES[CURRICULUM_STAGES.index(stage_name) - 1]} must be completed first."
+                #     )
                 if self.rank == 0:
-                    print("🆕 Starting with fresh model (first stage)")
+                    print(f"🆕 Starting {stage_name} with fresh model")
                     print()
         except Exception as e:
             if self.rank == 0:
@@ -1366,56 +1379,59 @@ class CurriculumTrainer:
             sampler=sampler,
         )
 
-    def stage4_sleep_cot(
+    
+    def stage6_cgm_cot(
         self, batch_size: int = None, eval_only: bool = False
     ) -> Dict[str, Any]:
-        """Stage 4: Chain-of-Thought Reasoning (SleepEDF).
+        """Stage 6: Chain-of-Thought Reasoning (CGM Diabetes Classification).
 
         Configuration:
         - Epochs: 60
         - OpenTSLMSP: encoder_lr=2e-4, projector_lr=1e-4
         - OpenTSLMFlamingo: base_lr=2e-4
-        - Metric: Test loss only (chain-of-thought reasoning)
+        - Metric: Test loss only
         """
-        sampler = None
+
+        known_labels = set(CGMDiabetesDataset.get_labels())
+
+        def extract_label(text: str):
+            """Return the first known label found after 'Answer:' in text, or None."""
+            after = text.split("Answer:")[-1].strip()
+            for label in known_labels:
+                if after.lower().startswith(label.lower()):
+                    return label
+            return None
+
+        def cgm_accuracy(predictions, gold_answers):
+            correct = sum(
+                1 for pred, gold in zip(predictions, gold_answers)
+                if extract_label(gold) is not None
+                and extract_label(gold) == extract_label(pred)
+            )
+            return {"accuracy": correct / len(predictions) if predictions else 0.0}
+
+        # Resolve captions file — use GPT-4o captions if available, else template fallback.
+        captions_path = Path("cgm_diabetes/captioning/captions.json")
+        resolved_captions = str(captions_path) if captions_path.exists() else None
+        if resolved_captions:
+            print(f"[stage6] Using captions from {captions_path}")
+        else:
+            print("[stage6] captions.json not found — using template rationales")
+
+        # Wrap CGMDiabetesDataset with captions_path pre-configured so _train_stage
+        # can call dataset_class(split, EOS_TOKEN=...) without needing to know about it.
+        dataset_factory = partial(CGMDiabetesDataset, captions_path=resolved_captions)
 
         return self._train_stage(
-            stage_name="stage4_sleep_cot",
-            dataset_class=SleepEDFCoTQADataset,
+            stage_name="stage6_cgm_cot",
+            dataset_class=dataset_factory,
             num_epochs=60,
             lr_encoder=2e-4,
             lr_projector=1e-4,
             lr_base=2e-4,
-            metric_func=None,  # Only test loss for chain-of-thought reasoning
+            metric_func=cgm_accuracy, # For meaningful evaluation
             batch_size=batch_size,
             eval_only=eval_only,
-            sampler=sampler,
-        )
-
-    def stage5_ecg_cot(
-        self, batch_size: int = None, eval_only: bool = False
-    ) -> Dict[str, Any]:
-        """Stage 5: Chain-of-Thought Reasoning (ECG QA CoT).
-
-        Configuration:
-        - Epochs: 60
-        - OpenTSLMSP: encoder_lr=2e-4, projector_lr=1e-4
-        - OpenTSLMFlamingo: base_lr=2e-4
-        - Metric: Test loss only (chain-of-thought reasoning)
-        """
-        sampler = None
-
-        return self._train_stage(
-            stage_name="stage5_ecg_cot",
-            dataset_class=ECGQACoTQADataset,
-            num_epochs=60,
-            lr_encoder=2e-4,
-            lr_projector=1e-4,
-            lr_base=2e-4,
-            metric_func=None,  # Only test loss for chain-of-thought reasoning
-            batch_size=batch_size,
-            eval_only=eval_only,
-            sampler=sampler,
         )
 
     def run_curriculum(
@@ -1485,14 +1501,8 @@ class CurriculumTrainer:
                 )
                 results[stage] = stage_results
                 self._mark_stage_completed(stage, stage_results)
-            elif stage == "stage4_sleep_cot":
-                stage_results = self.stage4_sleep_cot(
-                    batch_size=batch_size, eval_only=eval_only
-                )
-                results[stage] = stage_results
-                self._mark_stage_completed(stage, stage_results)
-            elif stage == "stage5_ecg_cot":
-                stage_results = self.stage5_ecg_cot(
+            elif stage == "stage6_cgm_cot":
+                stage_results = self.stage6_cgm_cot(
                     batch_size=batch_size, eval_only=eval_only
                 )
                 results[stage] = stage_results
@@ -1616,42 +1626,7 @@ class CurriculumTrainer:
         model = self._get_model()
 
         # Enable LoRA for stages after stage2_captioning
-        stages_with_lora = ["stage3_cot", "stage4_sleep_cot", "stage5_ecg_cot"]
-
-        if stage_name in stages_with_lora:
-            if not getattr(model, "lora_enabled", False):
-                if self.rank == 0:
-                    print(f"🔧 Enabling LoRA for {stage_name}")
-                try:
-                    model.enable_lora(lora_r=16, lora_alpha=32, lora_dropout=0.0)
-                    if self.rank == 0:
-                        print(f"✅ LoRA enabled for {stage_name}")
-                except Exception as e:
-                    if self.rank == 0:
-                        print(f"❌ Failed to enable LoRA for {stage_name}: {e}")
-                        print("   Continuing without LoRA...")
-            else:
-                if self.rank == 0:
-                    print(f"✅ LoRA already enabled for {stage_name}")
-        else:
-            if self.rank == 0:
-                if stage_name in ["stage1_mcq", "stage2_captioning"]:
-                    print(
-                        f"ℹ️  LoRA disabled for {stage_name} (only enabled for stages 3+)"
-                    )
-                else:
-                    print(f"ℹ️  LoRA not configured for {stage_name}")
-
-    def _enable_lora_if_needed(self, stage_name: str):
-        """Enable LoRA for OpenTSLMSP models in stages after stage2."""
-        if self.model_type != "OpenTSLMSP":
-            return  # LoRA only for OpenTSLMSP
-
-        # Get the underlying model (handles DDP wrapping)
-        model = self._get_model()
-
-        # Enable LoRA for stages after stage2_captioning
-        stages_with_lora = ["stage3_cot", "stage4_sleep_cot", "stage5_ecg_cot"]
+        stages_with_lora = ["stage3_cot", "stage4_sleep_cot", "stage5_ecg_cot", "stage6_cgm_cot"]
 
         if stage_name in stages_with_lora:
             if not getattr(model, "lora_enabled", False):

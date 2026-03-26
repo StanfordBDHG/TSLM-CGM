@@ -1,5 +1,7 @@
-numpy 
-pandas 
+numpy
+pandas
+azure-storage-blob
+python-dotenv
 torch 
 joblib
 argparse
