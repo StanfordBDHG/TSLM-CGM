@@ -429,13 +429,6 @@ def generate_captions(
                   f"— {stats['n_readings']} readings...")
             caption = call_gpt4_vision(client, prompt, image_b64)
 
-            expected_suffix = f"Answer: {label}"
-            lines = caption.rstrip().splitlines()
-            while lines and lines[-1].lstrip().lower().startswith("answer:"):
-                lines.pop()
-            body = "\n".join(lines).rstrip()
-            caption = f"{body}\n{expected_suffix}" if body else expected_suffix
-
             captions[patient_id] = caption
             processed += 1
 
