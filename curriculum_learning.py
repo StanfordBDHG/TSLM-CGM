@@ -26,6 +26,7 @@ from time_series_datasets.util import (
     extend_time_series_to_match_patch_size_and_aggregate,
 )
 from cgm_diabetes.data.CGMDiabetesDataset import CGMDiabetesDataset
+from cgm_diabetes.ir_prediction.CGMIRDataset import CGMIRDataset
 
 import torch
 import torch.distributed as dist
@@ -74,6 +75,7 @@ CURRICULUM_STAGES = [
     "stage4_sleep_cot",
     "stage5_ecg_cot",
     "stage6_cgm_cot",
+    "stage6_ir_cgm_cot",
 ]
 
 
@@ -1434,6 +1436,57 @@ class CurriculumTrainer:
             eval_only=eval_only,
         )
 
+    def stage6_ir_cgm_cot(
+        self, batch_size: int = None, eval_only: bool = False
+    ) -> Dict[str, Any]:
+        """Stage 6 IR: Chain-of-Thought Reasoning (CGM Insulin Resistance Classification).
+
+        Configuration:
+        - Epochs: 60
+        - OpenTSLMSP: encoder_lr=2e-4, projector_lr=1e-4
+        - OpenTSLMFlamingo: base_lr=2e-4
+        - Metric: IR classification accuracy
+        """
+
+        known_labels = set(CGMIRDataset.get_labels())
+
+        def extract_label(text: str):
+            """Return the first known label found after 'Answer:' in text, or None."""
+            after = text.split("Answer:")[-1].strip()
+            for label in known_labels:
+                if after.lower().startswith(label.lower()):
+                    return label
+            return None
+
+        def ir_accuracy(predictions, gold_answers):
+            correct = sum(
+                1 for pred, gold in zip(predictions, gold_answers)
+                if extract_label(gold) is not None
+                and extract_label(gold) == extract_label(pred)
+            )
+            return {"accuracy": correct / len(predictions) if predictions else 0.0}
+
+        labels_path = Path("cgm_diabetes/ir_prediction/ir_labels.json")
+        resolved_labels = str(labels_path) if labels_path.exists() else None
+        if resolved_labels:
+            print(f"[stage6_ir] Using IR labels from {labels_path}")
+        else:
+            print("[stage6_ir] ir_labels.json not found — using template rationales")
+
+        dataset_factory = partial(CGMIRDataset, labels_path=resolved_labels)
+
+        return self._train_stage(
+            stage_name="stage6_ir_cgm_cot",
+            dataset_class=dataset_factory,
+            num_epochs=60,
+            lr_encoder=2e-4,
+            lr_projector=1e-4,
+            lr_base=2e-4,
+            metric_func=ir_accuracy,
+            batch_size=batch_size,
+            eval_only=eval_only,
+        )
+
     def run_curriculum(
         self, stages: List[str] = None, batch_size: int = None, eval_only: bool = False
     ):
@@ -1503,6 +1556,12 @@ class CurriculumTrainer:
                 self._mark_stage_completed(stage, stage_results)
             elif stage == "stage6_cgm_cot":
                 stage_results = self.stage6_cgm_cot(
+                    batch_size=batch_size, eval_only=eval_only
+                )
+                results[stage] = stage_results
+                self._mark_stage_completed(stage, stage_results)
+            elif stage == "stage6_ir_cgm_cot":
+                stage_results = self.stage6_ir_cgm_cot(
                     batch_size=batch_size, eval_only=eval_only
                 )
                 results[stage] = stage_results
@@ -1626,7 +1685,7 @@ class CurriculumTrainer:
         model = self._get_model()
 
         # Enable LoRA for stages after stage2_captioning
-        stages_with_lora = ["stage3_cot", "stage4_sleep_cot", "stage5_ecg_cot", "stage6_cgm_cot"]
+        stages_with_lora = ["stage3_cot", "stage4_sleep_cot", "stage5_ecg_cot", "stage6_cgm_cot", "stage6_ir_cgm_cot"]
 
         if stage_name in stages_with_lora:
             if not getattr(model, "lora_enabled", False):
