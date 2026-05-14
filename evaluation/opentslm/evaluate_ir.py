@@ -80,6 +80,7 @@ def load_model(model_type: str, checkpoint_path: str | None, device: str, llm_id
         model.load_from_file(checkpoint_path)
     else:
         print("  No checkpoint — using base LLM weights (baseline)")
+        model.to(device)
 
     model.eval()
     print("Model ready.")
