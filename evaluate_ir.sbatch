@@ -5,7 +5,7 @@
 #SBATCH --time=4:00:00
 #SBATCH --partition=gpu
 #SBATCH --gpus=1
-#SBATCH --constraint="GPU_MEM:48GB|GPU_MEM:80GB"
+#SBATCH --constraint="GPU_MEM:24GB|GPU_MEM:32GB|GPU_MEM:40GB|GPU_MEM:48GB|GPU_MEM:80GB"
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=64GB
 #SBATCH --mail-type=BEGIN,END,FAIL
