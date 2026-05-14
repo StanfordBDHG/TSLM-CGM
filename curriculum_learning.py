@@ -74,7 +74,6 @@ CURRICULUM_STAGES = [
     "stage3_cot",
     "stage4_sleep_cot",
     "stage5_ecg_cot",
-    "stage6_cgm_cot",
     "stage6_ir_cgm_cot",
 ]
 

@@ -314,7 +314,7 @@ class OpenTSLMFlamingo(TimeSeriesLLM):
         """
         Load model parameters with non-strict loading to handle Flamingo-specific layers.
         """
-        checkpoint = torch.load(path, map_location=self.device)
+        checkpoint = torch.load(path, map_location="cpu")
 
         if "llm" in checkpoint:
             model_state = checkpoint["llm"]
