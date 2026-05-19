@@ -121,6 +121,7 @@ class CurriculumTrainer:
         dist_backend: str = "nccl",
         local_rank: int = int(os.environ.get("LOCAL_RANK", 0)),
         llm_id: str = None,
+        results_base: str = "results",
     ):
         """
         Initialize the curriculum trainer.
@@ -132,6 +133,7 @@ class CurriculumTrainer:
             dist_url: URL used to set up distributed training
             dist_backend: Distributed backend
             local_rank: Local GPU rank
+            results_base: Base directory for results (default: results)
             llm_id: LLM model ID (e.g., 'google/medgemma-2b', 'meta-llama/Llama-3.2-1B')
         """
         self.model_type = model_type
@@ -156,7 +158,7 @@ class CurriculumTrainer:
             self._init_distributed()
 
         self.model = self._initialize_model()
-        self.results_dir = os.path.join("results", self.llm_id_safe, self.model_type)
+        self.results_dir = os.path.join(results_base, self.llm_id_safe, self.model_type)
         self._create_results_dir()
 
     def _get_device(self) -> str:
@@ -1778,6 +1780,13 @@ def main():
         help="Local GPU rank",
     )
 
+    parser.add_argument(
+        "--results_dir",
+        type=str,
+        default="results",
+        help="Base results directory (default: results)",
+    )
+
     # Logging arguments
     parser.add_argument(
         "--verbose", default=False, action="store_true", help="Enable verbose logging"
@@ -1798,6 +1807,7 @@ def main():
         dist_backend=args.dist_backend,
         local_rank=args.local_rank,
         llm_id=args.llm_id,
+        results_base=args.results_dir,
     )
 
     # Run curriculum
