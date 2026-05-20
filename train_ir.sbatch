@@ -5,7 +5,7 @@
 #SBATCH --time=2-00:00:00
 #SBATCH --partition=gpu
 #SBATCH --gpus=1
-#SBATCH --constraint="GPU_MEM:48GB|GPU_MEM:80GB"
+#SBATCH --constraint="GPU_MEM:80GB"
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=64GB
 #SBATCH --mail-type=BEGIN,END,FAIL
@@ -41,7 +41,7 @@ case "$MODEL" in
         --llm_id meta-llama/Llama-3.2-3B \
         --results_dir results_ir_pretrained \
         --gradient_checkpointing \
-        --batch_size 4 \
+        --batch_size 1 \
         --verbose
     ;;
   flamingo_baseline)
@@ -52,7 +52,7 @@ case "$MODEL" in
         --llm_id meta-llama/Llama-3.2-3B \
         --results_dir results_ir_baseline \
         --gradient_checkpointing \
-        --batch_size 4 \
+        --batch_size 1 \
         --verbose
     ;;
   sp_pretrained)
@@ -63,7 +63,7 @@ case "$MODEL" in
         --llm_id meta-llama/Llama-3.2-3B \
         --results_dir results_ir_pretrained \
         --gradient_checkpointing \
-        --batch_size 4 \
+        --batch_size 1 \
         --verbose
     ;;
   sp_baseline)
@@ -74,7 +74,7 @@ case "$MODEL" in
         --llm_id meta-llama/Llama-3.2-3B \
         --results_dir results_ir_baseline \
         --gradient_checkpointing \
-        --batch_size 4 \
+        --batch_size 1 \
         --verbose
     ;;
   *)
